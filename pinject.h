@@ -249,13 +249,13 @@ static pinject_data pinject_begin ( int32_t pid ) {
     return output;
 }
 
-static void *pinject_dlopen ( pinject_data data, const char *file, int mode ) {
+static void *pinject_dlopen ( pinject_data *data, const char *file, int mode ) {
     // Firstly, we need to align base ESP to a 16-byte boundary for stability
-    ulong baseEsp = data.tempregs.esp & ~0xF;
+    ulong baseEsp = data->tempregs.esp & ~0xF;
 
     // Create a trap (int 3) for the function to return to.
     ulong trapAddr = baseEsp - CDECL_SAFEZONE;
-    ptrace( PTRACE_POKETEXT, data.pid, trapAddr, 0xCC );
+    ptrace( PTRACE_POKETEXT, data->pid, trapAddr, 0xCC );
     debugger( "Created a trap instruction at address %p!", trapAddr );
 
     // Get the remote address for path. We're gonna write that into
@@ -264,125 +264,127 @@ static void *pinject_dlopen ( pinject_data data, const char *file, int mode ) {
     long remotePathAddr = ( trapAddr - szFilePath - 16 ) & ~0x3;
 
     // Write it to the target process' stack
-    __poke_text( data.pid, remotePathAddr, file );
+    __poke_text( data->pid, remotePathAddr, file );
 
     // Manually build the stack frame for dlopen( path, mode )
     // [esp + 8] = mode (convert it to ulong)
     // [esp + 4] = path pointer (remotePathAddr)
     // [esp + 0] = return address (trapAddr)
-    data.tempregs.esp = ( remotePathAddr - 32 ) & ~0xF;
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp + 0, trapAddr );
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp + 4, remotePathAddr );
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp + 8, ( ulong )mode );
+    data->tempregs.esp = ( remotePathAddr - 32 ) & ~0xF;
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp + 0, trapAddr );
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp + 4, remotePathAddr );
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp + 8, ( ulong )mode );
 
     // Set the function registry
-    data.tempregs.eip = data.dlopen;
+    data->tempregs.eip = data->dlopen;
 
     // Send it straight to the target process
-    bool_t regSent = __set_regs( data.pid, &data.tempregs );
+    bool_t regSent = __set_regs( data->pid, &data->tempregs );
     if ( !regSent )
         return 0;
 
     // Let it execute our tiny stack
-    bool_t procContinue = ptrace( PTRACE_CONT, data.pid, 0, 0 ) != -1;
+    bool_t procContinue = ptrace( PTRACE_CONT, data->pid, 0, 0 ) != -1;
     assertp( !procContinue, "Cannot continue target process." );
 
     // Wait for the process to stop
-    waitpid( data.pid, NULL, 0 );
+    waitpid( data->pid, NULL, 0 );
 
     // Fetch the result
-    bool_t regFetched = ptrace( PTRACE_GETREGS, data.pid,
-        0, &data.tempregs ) != -1;
+    bool_t regFetched = ptrace( PTRACE_GETREGS, data->pid,
+        0, &data->tempregs ) != -1;
     assertp( !regFetched, "Cannot get registries of target process." );
     debugger( "Fetched process' registries after execution!" );
 
     // Reset the registries
-    __set_regs( data.pid, &data.regs );
+    __set_regs( data->pid, &data->regs );
 
     // Return the result
-    debugger( "dlopen call returned %p", data.tempregs.eax );
+    debugger( "dlopen call returned %p", data->tempregs.eax );
 
-    return ( void* )data.tempregs.eax;
+    return ( void* )data->tempregs.eax;
 }
 
-static int pinject_dlclose ( pinject_data data, void *handle ) {
-    ulong trapAddr = data.tempregs.esp - ( BUFFER_MAX + CDECL_SAFEZONE + 16 );
-    ptrace( PTRACE_POKETEXT, data.pid, trapAddr, 0xCC );
+static int pinject_dlclose ( pinject_data *data, void *handle ) {
+    ulong trapAddr = data->tempregs.esp - ( BUFFER_MAX + CDECL_SAFEZONE + 16 );
+    ptrace( PTRACE_POKETEXT, data->pid, trapAddr, 0xCC );
     debugger( "Created a trap instruction at address %p!", trapAddr );
 
     // Manually build the stack frame for dlclose( handle )
     // [esp + 4] = handle (*handle)
     // [esp + 0] = return address (trapAddr)
-    data.tempregs.esp -= 16;
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp + 0, trapAddr );
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp + 4, ( ulong )handle );
+    data->tempregs.esp -= 16;
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp + 0, trapAddr );
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp + 4, ( ulong )handle );
 
     // Set the function registry
-    data.tempregs.eip = data.dlclose;
+    data->tempregs.eip = data->dlclose;
 
     // Send it straight to the target process
-    bool_t regSent = __set_regs( data.pid, &data.tempregs );
+    bool_t regSent = __set_regs( data->pid, &data->tempregs );
     if ( !regSent )
         return 0;
 
     // Let it execute our tiny stack
-    bool_t procContinue = ptrace( PTRACE_CONT, data.pid, 0, 0 ) != -1;
+    bool_t procContinue = ptrace( PTRACE_CONT, data->pid, 0, 0 ) != -1;
     assertp( !procContinue, "Cannot continue target process." );
 
     // Wait for the process to stop
-    waitpid( data.pid, NULL, 0 );
+    waitpid( data->pid, NULL, 0 );
 
     // Fetch the result
-    bool_t regFetched = ptrace( PTRACE_GETREGS, data.pid,
-        0, &data.tempregs ) != -1;
+    bool_t regFetched = ptrace( PTRACE_GETREGS, data->pid,
+        0, &data->tempregs ) != -1;
     assertp( !regFetched, "Cannot get registries of target process." );
     debugger( "Fetched process' registries after execution!" );
 
     // Return the result
-    return data.tempregs.eax;
+    return data->tempregs.eax;
 }
 
-static void pinject_dlerror ( pinject_data data, char *output,
+static void pinject_dlerror ( pinject_data *data, char *output,
     ulong outputSz ) {
     // Setup dlerror call (dlerror takes no arguments)
-    ulong trapAddr = data.tempregs.esp - ( BUFFER_MAX + CDECL_SAFEZONE + 16 );
-    ptrace( PTRACE_POKETEXT, data.pid, trapAddr, 0xCC );
+    ulong trapAddr = data->tempregs.esp - ( BUFFER_MAX + CDECL_SAFEZONE + 16 );
+    ptrace( PTRACE_POKETEXT, data->pid, trapAddr, 0xCC );
 
-    data.tempregs.esp = data.tempregs.esp - 16;
-    ptrace( PTRACE_POKETEXT, data.pid, data.tempregs.esp, trapAddr );
-    data.tempregs.eip = data.dlerror;
+    data->tempregs.esp = data->tempregs.esp - 16;
+    ptrace( PTRACE_POKETEXT, data->pid, data->tempregs.esp, trapAddr );
+    data->tempregs.eip = data->dlerror;
 
-    __set_regs( data.pid, &data.tempregs );
+    __set_regs( data->pid, &data->tempregs );
 
-    bool_t procContinue = ptrace( PTRACE_CONT, data.pid, 0, 0 ) != -1;
+    bool_t procContinue = ptrace( PTRACE_CONT, data->pid, 0, 0 ) != -1;
     assertv( !procContinue, "Cannot continue target process." );
 
-    waitpid( data.pid, NULL, 0 );
+    waitpid( data->pid, NULL, 0 );
 
     // Get the pointer to the error string (returned in EAX)
-    __get_regs( data.pid, &data.tempregs );
-    ulong errorStrPtr = data.tempregs.eax;
+    __get_regs( data->pid, &data->tempregs );
+    ulong errorStrPtr = data->tempregs.eax;
 
     if ( errorStrPtr ) {
-        __peek_text( data.pid, errorStrPtr, output, outputSz );
+        __peek_text( data->pid, errorStrPtr, output, outputSz );
         debugger( "Target dlerror: %s", output );
     } else debugger( "dlerror() also returned 0. Check dlopen address." );
 }
 
-static int pinject_finish ( pinject_data data ) {
+static int pinject_finish ( pinject_data *data ) {
     // Restore registriuser_regs_t *regses
-    bool_t regSent = ptrace( PTRACE_SETREGS, data.pid, 0, &data.regs ) != -1;
+    bool_t regSent = ptrace( PTRACE_SETREGS, data->pid, 0, &data->regs ) != -1;
     assertp( !regSent, "Cannot set registries of target process." );
     debugger( "Restored process' registries!" );
 
     // Detach from the target process
-    bool_t detached = ptrace( PTRACE_DETACH, data.pid, NULL, NULL ) != -1;
+    bool_t detached = ptrace( PTRACE_DETACH, data->pid, NULL, NULL ) != -1;
     assertp( !detached, "Cannot detach from process." );
     debugger( "Detached from the process!" );
 
     // Continue process.
-    assertp( kill( data.pid, SIGCONT ) == -1,
+    assertp( kill( data->pid, SIGCONT ) == -1,
         "Failed to resume target process." );
+
+    data->valid = 0;
 
     return 1;
 }
